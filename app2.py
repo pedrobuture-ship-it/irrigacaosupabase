@@ -250,6 +250,22 @@ def crops_to_df() -> pd.DataFrame:
 # BANCO SUPABASE
 # ============================================================
 
+def clear_app_caches():
+    for fn_name in [
+        "list_plantios",
+        "get_plantio",
+        "get_irrigation_map",
+        "list_plantios_com_historico",
+        "get_last_saved_day",
+        "load_history_df",
+        "load_solos_df",
+    ]:
+        fn = globals().get(fn_name)
+        if fn is not None and hasattr(fn, "clear"):
+            fn.clear()
+
+
+
 def init_db():
     """
     No Supabase, as tabelas são criadas no SQL Editor.
@@ -290,6 +306,7 @@ def create_plantio(
     return sb_insert("plantios", payload)
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def list_plantios() -> pd.DataFrame:
     data = sb_select(
         "plantios",
@@ -300,11 +317,13 @@ def list_plantios() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_plantio(plantio_id: str) -> Optional[dict]:
     data = sb_select("plantios", filters={"id": f"eq.{plantio_id}"}, limit=1)
     return data[0] if data else None
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def get_irrigation_map(plantio_id: str) -> Dict[date, float]:
     rows = sb_select(
         "historico_dias",
@@ -318,6 +337,7 @@ def get_irrigation_map(plantio_id: str) -> Dict[date, float]:
 
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def list_plantios_com_historico() -> pd.DataFrame:
     plantios_df = list_plantios()
     if plantios_df.empty:
@@ -336,6 +356,7 @@ def list_plantios_com_historico() -> pd.DataFrame:
     return plantios_df[plantios_df["id"].astype(str).isin(ids_com_historico)].copy()
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def get_last_saved_day(plantio_id: str) -> Optional[dict]:
     data = sb_select(
         "historico_dias",
@@ -372,6 +393,7 @@ def upsert_day_result(plantio_id: str, irrigou: bool, result: ResultDay):
     return sb_upsert("historico_dias", payload, on_conflict="plantio_id,data")
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def load_history_df(plantio_id: str) -> pd.DataFrame:
     rows = sb_select(
         "historico_dias",
@@ -408,6 +430,7 @@ def load_history_df(plantio_id: str) -> pd.DataFrame:
     return df
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def load_solos_df() -> pd.DataFrame:
     data = sb_select("solos", select_cols="id,nome,ucc,upmp,ds,created_at", order_by="nome")
     return pd.DataFrame(data)
@@ -987,6 +1010,7 @@ with aba1:
                 ds=ds,
                 z_override_m=z_override_m,
             )
+            clear_app_caches()
             st.success("Plantio cadastrado com sucesso.")
             st.rerun()
 
@@ -1107,7 +1131,10 @@ with aba2:
                             format="%.3f"
                         )
 
-                    if st.button("Salvar dia"):
+                    with st.form("form_salvar_dia"):
+                        salvar_dia = st.form_submit_button("Salvar dia")
+
+                    if salvar_dia:
                         irrigacao_map_atualizada = dict(irrigacao_map)
                         irrigacao_map_atualizada[data_operacao] = float(irrigacao_informada)
 
@@ -1130,6 +1157,7 @@ with aba2:
                             result=dia_final,
                         )
 
+                        clear_app_caches()
                         st.success("Dia salvo com sucesso.")
                         st.rerun()
 
@@ -1181,18 +1209,24 @@ with aba3:
                 datas_hist = hist_df["Data"].tolist()
                 data_escolhida = st.selectbox("Escolha a data para apagar", datas_hist)
 
-                if st.button("Apagar dia selecionado"):
+                with st.form("form_apagar_dia"):
+                    apagar_dia = st.form_submit_button("Apagar dia selecionado")
+                if apagar_dia:
                     data_iso = datetime.strptime(data_escolhida, "%d/%m/%Y").strftime("%Y-%m-%d")
                     delete_history_day(plantio_hist_id, data_iso)
+                    clear_app_caches()
                     st.success("Dia apagado com sucesso.")
                     st.rerun()
 
             with c2:
                 st.markdown("#### Apagar tudo")
                 confirmar_apagar_hist = st.checkbox("Confirmo apagar todo o histórico deste plantio")
-                if st.button("Apagar histórico completo"):
+                with st.form("form_apagar_historico"):
+                    apagar_hist = st.form_submit_button("Apagar histórico completo")
+                if apagar_hist:
                     if confirmar_apagar_hist:
                         delete_all_history(plantio_hist_id)
+                        clear_app_caches()
                         st.success("Histórico completo apagado.")
                         st.rerun()
                     else:
@@ -1201,9 +1235,12 @@ with aba3:
             st.markdown("### Remover plantio inteiro")
             confirmar_apagar_plantio = st.checkbox("Confirmo apagar o plantio e todo o histórico dele")
 
-            if st.button("Apagar plantio"):
+            with st.form("form_apagar_plantio"):
+                apagar_plantio = st.form_submit_button("Apagar plantio")
+            if apagar_plantio:
                 if confirmar_apagar_plantio:
                     delete_plantio(plantio_hist_id)
+                    clear_app_caches()
                     st.success("Plantio apagado com sucesso.")
                     st.rerun()
                 else:
@@ -1246,6 +1283,7 @@ with aba4:
             if salvar_solo:
                 try:
                     create_solo(solo_nome, solo_ucc, solo_upmp, solo_ds)
+                    clear_app_caches()
                     st.success("Solo cadastrado com sucesso.")
                     st.rerun()
                 except Exception as e:
@@ -1261,9 +1299,12 @@ with aba4:
             solo_delete_id = opcoes_delete_solo[solo_delete_label]
 
             confirmar_solo = st.checkbox("Confirmo apagar este solo")
-            if st.button("Apagar solo"):
+            with st.form("form_apagar_solo"):
+                apagar_solo = st.form_submit_button("Apagar solo")
+            if apagar_solo:
                 if confirmar_solo:
                     delete_solo(solo_delete_id)
+                    clear_app_caches()
                     st.success("Solo apagado com sucesso.")
                     st.rerun()
                 else:
