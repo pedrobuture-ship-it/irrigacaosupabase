@@ -927,75 +927,154 @@ def results_to_dataframe(results: List[ResultDay]) -> pd.DataFrame:
 # APP STREAMLIT
 # ============================================================
 
+# ============================================================
+# APP STREAMLIT
+# ============================================================
+
 init_db()
 
-st.set_page_config(page_title="Controle de Irrigação", layout="wide")
-st.title("Controle de Irrigação - FAO-56")
-st.caption("Com estado anterior, operação diária, histórico, culturas e solos")
+st.set_page_config(
+    page_title="Controle de Irrigação",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-aba1, aba2, aba3, aba4, aba5 = st.tabs(["Novo plantio", "Operação diária", "Histórico", "Cadastros", "Cálculos"])
+st.title("Controle de Irrigação")
+st.caption("Acompanhamento diário da cultura, clima e necessidade de irrigação")
 
 
-with aba1:
+def format_plantio_label(row: pd.Series) -> str:
+    return (
+        f"{row['nome']} | {CROPS.get(row['cultura_key'], Crop(row['cultura_key'],0,0,0,0,0,0,0,0,0,0,0)).nome if row['cultura_key'] in CROPS else row['cultura_key']} "
+        f"| plantio em {pd.to_datetime(row['data_plantio']).strftime('%d/%m/%Y')}"
+    )
+
+
+def render_empty_state(message: str):
+    st.info(message)
+
+
+def render_sidebar() -> str:
+    with st.sidebar:
+        st.header("Navegação")
+        pagina = st.radio(
+            "Escolha a área",
+            [
+                "Novo plantio",
+                "Operação diária",
+                "Histórico",
+                "Cadastros",
+                "Cálculos",
+            ],
+            key="pagina_principal",
+        )
+
+        st.divider()
+        st.subheader("Orientação")
+        st.caption(
+            "Use a operação diária para consultar o clima do dia, registrar a irrigação realizada "
+            "e projetar os próximos dias."
+        )
+
+    return pagina
+
+
+def render_resumo_plantio_card(plantio: dict):
+    crop = CROPS[plantio["cultura_key"]]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Cultura", crop.nome)
+    c2.metric("Sistema", str(plantio["sistema_irrigacao"]).title())
+    c3.metric("Plantio", pd.to_datetime(plantio["data_plantio"]).strftime("%d/%m/%Y"))
+    c4.metric("Local", plantio["local"])
+
+    st.caption(
+        f"Latitude: {plantio['latitude']:.6f} | Longitude: {plantio['longitude']:.6f} | "
+        f"Timezone: {plantio['timezone']}"
+    )
+
+
+def render_novo_plantio():
     st.subheader("Cadastrar novo plantio")
+    st.write("Informe os dados básicos da área, cultura, solo e irrigação.")
 
-    with st.form("form_novo_plantio"):
+    solos_df = load_solos_df()
+
+    with st.form("form_novo_plantio", clear_on_submit=False):
+        st.markdown("### Identificação da área")
         c1, c2, c3 = st.columns(3)
-        nome = c1.text_input("Nome do plantio / talhão", value="Talhão A")
+        nome = c1.text_input("Nome do plantio ou talhão", value="Talhão A")
         local = c2.text_input("Local", value="UEPG")
         data_plantio = c3.date_input("Data de plantio", value=date.today())
 
+        st.markdown("### Localização")
         c4, c5, c6 = st.columns(3)
         latitude = c4.number_input("Latitude", value=-25.095000, format="%.6f")
         longitude = c5.number_input("Longitude", value=-50.161900, format="%.6f")
         timezone = c6.text_input("Timezone", value="America/Sao_Paulo")
 
+        st.markdown("### Cultura e irrigação")
         c7, c8 = st.columns(2)
         cultura_key = c7.selectbox(
             "Cultura",
             list(CROPS.keys()),
-            format_func=lambda x: CROPS[x].nome
+            format_func=lambda x: CROPS[x].nome,
         )
         sistema_irrigacao = c8.selectbox(
             "Sistema de irrigação",
             list(IRRIGATION_EFFICIENCY.keys()),
-            format_func=lambda x: x.title()
+            format_func=lambda x: x.title(),
+        )
+
+        crop = CROPS[cultura_key]
+        st.caption(
+            f"Profundidade radicular padrão (Z): {crop.z_m:.2f} m | "
+            f"Fator f da cultura: {crop.fator_f:.2f}"
         )
 
         st.markdown("### Solo")
-
-        solos_df = load_solos_df()
         usar_solo_cadastrado = st.checkbox("Usar solo cadastrado", value=True)
+
+        ucc = 0.0
+        upmp = 0.0
+        ds = 0.0
 
         if usar_solo_cadastrado and not solos_df.empty:
             opcoes_solo = {
                 f"{row['nome']} | Ucc={row['ucc']:.3f} | Upmp={row['upmp']:.3f} | Ds={row['ds']:.3f}": row
                 for _, row in solos_df.iterrows()
             }
-            solo_label = st.selectbox("Escolha o solo", list(opcoes_solo.keys()))
-            solo_row = opcoes_solo[solo_label]
+            solo_escolhido_label = st.selectbox("Solo cadastrado", list(opcoes_solo.keys()))
+            solo_sel = opcoes_solo[solo_escolhido_label]
+            ucc = float(solo_sel["ucc"])
+            upmp = float(solo_sel["upmp"])
+            ds = float(solo_sel["ds"])
 
             c9, c10, c11 = st.columns(3)
-            ucc = c9.number_input("Ucc (g/g)", min_value=0.0, value=float(solo_row["ucc"]), format="%.3f")
-            upmp = c10.number_input("Upmp (g/g)", min_value=0.0, value=float(solo_row["upmp"]), format="%.3f")
-            ds = c11.number_input("Ds (g/cm³)", min_value=0.0, value=float(solo_row["ds"]), format="%.3f")
+            c9.number_input("Ucc", value=ucc, format="%.3f", disabled=True)
+            c10.number_input("Upmp", value=upmp, format="%.3f", disabled=True)
+            c11.number_input("Ds", value=ds, format="%.3f", disabled=True)
         else:
             c9, c10, c11 = st.columns(3)
-            ucc = c9.number_input("Ucc (g/g)", min_value=0.0, value=0.32, format="%.3f")
-            upmp = c10.number_input("Upmp (g/g)", min_value=0.0, value=0.20, format="%.3f")
-            ds = c11.number_input("Ds (g/cm³)", min_value=0.0, value=1.25, format="%.3f")
+            ucc = c9.number_input("Ucc", min_value=0.0, value=0.30, format="%.3f")
+            upmp = c10.number_input("Upmp", min_value=0.0, value=0.15, format="%.3f")
+            ds = c11.number_input("Ds", min_value=0.0, value=1.30, format="%.3f")
 
-        st.markdown("### Overrides opcionais")
-        c12, c13 = st.columns(2)
-        usar_z = c12.checkbox("Usar Z manual")
-        crop = CROPS[cultura_key]
-       
+        st.markdown("### Ajustes opcionais")
+        z_override_flag = st.checkbox("Definir profundidade radicular manualmente", value=False)
+        z_override_m = None
+        if z_override_flag:
+            z_override_m = st.number_input(
+                "Profundidade radicular (m)",
+                min_value=0.01,
+                value=float(crop.z_m),
+                format="%.2f",
+            )
 
-        z_override_m = st.number_input("Z manual (m)", min_value=0.0, value=0.35, format="%.3f") if usar_z else None
+        salvar = st.form_submit_button("Salvar plantio", use_container_width=True)
 
-        salvar_plantio = st.form_submit_button("Salvar plantio")
-
-        if salvar_plantio:
+    if salvar:
+        try:
             create_plantio(
                 nome=nome,
                 local=local,
@@ -1013,734 +1092,790 @@ with aba1:
             clear_app_caches()
             st.success("Plantio cadastrado com sucesso.")
             st.rerun()
+        except Exception as e:
+            st.error(f"Erro ao cadastrar plantio: {e}")
 
 
-with aba2:
+def render_operacao_diaria():
     st.subheader("Operação diária")
+    st.write("Consulte o dia atual, registre a irrigação realizada e projete os próximos dias.")
 
     plantios_df = list_plantios()
-
     if plantios_df.empty:
-        st.info("Cadastre um plantio primeiro.")
-    else:
-        opcoes = {
-            f"ID {row['id']} - {row['nome']} - {row['cultura_key']} - plantio {row['data_plantio']}": str(row["id"])
-            for _, row in plantios_df.iterrows()
-        }
+        render_empty_state("Nenhum plantio cadastrado ainda.")
+        return
 
-        selecionado_label = st.selectbox("Escolha o plantio", list(opcoes.keys()))
-        plantio_id = opcoes[selecionado_label]
+    opcoes = {
+        format_plantio_label(row): str(row["id"])
+        for _, row in plantios_df.iterrows()
+    }
+
+    with st.form("form_contexto_operacao"):
+        st.markdown("### Seleção do plantio")
+        plantio_label = st.selectbox("Escolha o plantio", list(opcoes.keys()))
+        plantio_id = opcoes[plantio_label]
+
         plantio = get_plantio(plantio_id)
-
-        crop = CROPS[plantio["cultura_key"]]
-        soil = Soil(ucc=plantio["ucc"], upmp=plantio["upmp"], ds=plantio["ds"])
         data_plantio = to_date(plantio["data_plantio"])
 
-        c1, c2 = st.columns(2)
-        data_operacao = c1.date_input("Data da operação", value=date.today())
-        modo_auto = c2.checkbox("Mostrar recomendação automática (LLI/LBI)", value=True)
-
-        modo_calculo = st.radio(
-            "Modo de cálculo",
-            ["FAO-56", "Planilha"],
-            horizontal=True,
-            help="FAO-56 usa Z fixo da cultura. Planilha usa SR = 100 mm (Z = 0,10 m) nos primeiros 10 dias."
+        st.markdown("### Parâmetros de cálculo")
+        c1, c2, c3 = st.columns(3)
+        data_operacao = c1.date_input(
+            "Data de operação",
+            value=max(date.today(), data_plantio),
+            min_value=data_plantio,
+            key=f"data_operacao_{plantio_id}",
         )
-        modo_calculo_key = "fao56" if modo_calculo == "FAO-56" else "planilha"
+        modo_calculo_key = c2.selectbox(
+            "Método de cálculo",
+            ["fao56", "planilha"],
+            format_func=lambda x: "FAO-56" if x == "fao56" else "Planilha",
+            key=f"modo_calculo_{plantio_id}",
+        )
+        modo_auto = c3.selectbox(
+            "Modo de irrigação na simulação",
+            [True, False],
+            format_func=lambda x: "Automático" if x else "Manual",
+            key=f"modo_auto_{plantio_id}",
+        )
 
-        ultimo_dia = get_last_saved_day(plantio_id)
+        carregar = st.form_submit_button("Atualizar análise", use_container_width=True)
 
-        st.markdown("### Estado anterior")
-        if ultimo_dia:
-            st.success(
-                f"Estado anterior carregado. Último dia salvo: "
-                f"{datetime.strptime(ultimo_dia['data'], '%Y-%m-%d').strftime('%d/%m/%Y')} | "
-                f"DAP: {ultimo_dia['dap']} | Dr: {ultimo_dia['deplecao_mm']:.3f} mm"
+    if not carregar and "operacao_plantio_id" not in st.session_state:
+        return
+
+    st.session_state["operacao_plantio_id"] = plantio_id
+    st.session_state["operacao_data"] = data_operacao
+    st.session_state["operacao_modo"] = modo_calculo_key
+    st.session_state["operacao_auto"] = modo_auto
+
+    plantio = get_plantio(st.session_state["operacao_plantio_id"])
+    data_operacao = st.session_state["operacao_data"]
+    modo_calculo_key = st.session_state["operacao_modo"]
+    modo_auto = st.session_state["operacao_auto"]
+
+    crop = CROPS[plantio["cultura_key"]]
+    soil = Soil(
+        ucc=float(plantio["ucc"]),
+        upmp=float(plantio["upmp"]),
+        ds=float(plantio["ds"]),
+    )
+    data_plantio = to_date(plantio["data_plantio"])
+    irrigacao_map = get_irrigation_map(plantio["id"])
+
+    render_resumo_plantio_card(plantio)
+
+    try:
+        weather_data = fetch_weather_open_meteo(
+            latitude=plantio["latitude"],
+            longitude=plantio["longitude"],
+            start_date=data_plantio,
+            end_date=data_operacao,
+            timezone=plantio["timezone"],
+        )
+
+        resultados_antes = simulate_irrigation(
+            crop=crop,
+            soil=soil,
+            sistema_irrigacao=plantio["sistema_irrigacao"],
+            data_plantio=data_plantio,
+            weather_data=weather_data,
+            z_override_m=plantio["z_override_m"],
+            irrigacao_real_por_dia=irrigacao_map,
+            modo_automatico=modo_auto,
+            modo_calculo=modo_calculo_key,
+        )
+
+        if not resultados_antes:
+            st.error("Não foi possível gerar os resultados para a data escolhida.")
+            return
+
+        hoje_previsto = resultados_antes[-1]
+
+        st.markdown("### Resumo da operação do dia")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("DAP", hoje_previsto.dap)
+        m2.metric("Depleção atual (Dr)", f"{hoje_previsto.deplecao_mm:.3f} mm")
+        m3.metric("LLI recomendada", f"{hoje_previsto.lli_mm:.3f} mm")
+        m4.metric("LBI recomendada", f"{hoje_previsto.lbi_mm:.3f} mm")
+
+        c_info1, c_info2 = st.columns([1.15, 1])
+        with c_info1:
+            st.markdown("### Condição do dia")
+            resumo_df = pd.DataFrame([{
+                "Data": hoje_previsto.data.strftime("%d/%m/%Y"),
+                "Fase": explain_phase_name(hoje_previsto.fase),
+                "Kc": hoje_previsto.kc,
+                "Ks": hoje_previsto.ks,
+                "Kl": hoje_previsto.kl,
+                "ETo (mm)": hoje_previsto.eto_mm,
+                "ETc (mm)": hoje_previsto.etc_mm,
+                "Precipitação (mm)": hoje_previsto.p_mm,
+                "RAW (mm)": hoje_previsto.raw_mm,
+                "TAW (mm)": hoje_previsto.taw_mm,
+            }])
+            st.dataframe(resumo_df, width="stretch", hide_index=True)
+
+        with c_info2:
+            st.markdown("### Registrar decisão do dia")
+            with st.form(f"form_salvar_dia_{plantio['id']}"):
+                decisao = st.radio(
+                    "Irrigação realizada",
+                    ["Não irrigar", "Irrigar"],
+                    horizontal=True,
+                )
+
+                irrigacao_informada = 0.0
+                if decisao == "Irrigar":
+                    irrigacao_informada = st.number_input(
+                        "Lâmina real aplicada (mm)",
+                        min_value=0.0,
+                        value=float(hoje_previsto.lli_mm),
+                        format="%.3f",
+                    )
+
+                salvar_dia = st.form_submit_button("Salvar operação do dia", use_container_width=True)
+
+            if salvar_dia:
+                try:
+                    irrigacao_map_atualizada = dict(irrigacao_map)
+                    irrigacao_map_atualizada[data_operacao] = float(irrigacao_informada)
+
+                    resultados_finais = simulate_irrigation(
+                        crop=crop,
+                        soil=soil,
+                        sistema_irrigacao=plantio["sistema_irrigacao"],
+                        data_plantio=data_plantio,
+                        weather_data=weather_data,
+                        z_override_m=plantio["z_override_m"],
+                        irrigacao_real_por_dia=irrigacao_map_atualizada,
+                        modo_automatico=modo_auto,
+                        modo_calculo=modo_calculo_key,
+                    )
+
+                    dia_final = resultados_finais[-1]
+                    upsert_day_result(
+                        plantio_id=plantio["id"],
+                        irrigou=(decisao == "Irrigar"),
+                        result=dia_final,
+                    )
+
+                    clear_app_caches()
+                    st.success("Operação diária salva com sucesso.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao salvar a operação do dia: {e}")
+
+        st.markdown("### Evolução até a data selecionada")
+        df_resultados = results_to_dataframe(resultados_antes)
+        st.dataframe(df_resultados, width="stretch", hide_index=True)
+
+        st.markdown("### Projeção futura")
+        st.caption("Esta área agora ficou dentro da operação diária, usando a mesma base do plantio selecionado.")
+
+        with st.form(f"form_simulacao_futura_{plantio['id']}"):
+            s1, s2, s3 = st.columns(3)
+            dias_futuros = s1.number_input(
+                "Número de dias para projetar",
+                min_value=1,
+                max_value=30,
+                value=7,
+                step=1,
             )
-        else:
-            st.warning("Nenhum estado anterior salvo. Este será o primeiro registro do plantio.")
+            pef_mode_sim = s2.selectbox(
+                "Precipitação efetiva",
+                ["igual_p", "percentual"],
+                format_func=lambda x: "Usar precipitação total" if x == "igual_p" else "Usar percentual da precipitação",
+            )
+            pef_percentual_sim = s3.number_input(
+                "Percentual da precipitação efetiva",
+                min_value=0.0,
+                max_value=1.0,
+                value=1.0,
+                step=0.05,
+                format="%.2f",
+                disabled=(pef_mode_sim != "percentual"),
+            )
 
-        if data_operacao < data_plantio:
-            st.error("A data da operação não pode ser anterior à data de plantio.")
-        else:
-            irrigacao_map = get_irrigation_map(plantio_id)
+            simular_futuro = st.form_submit_button("Gerar projeção futura", use_container_width=True)
 
+        if simular_futuro:
             try:
-                weather_data = fetch_weather_open_meteo(
-                    latitude=float(plantio["latitude"]),
-                    longitude=float(plantio["longitude"]),
-                    start_date=data_plantio,
-                    end_date=data_operacao,
+                previsao_inicio = data_operacao
+                previsao_fim = data_operacao + timedelta(days=int(dias_futuros) - 1)
+
+                future_weather = fetch_weather_open_meteo(
+                    latitude=plantio["latitude"],
+                    longitude=plantio["longitude"],
+                    start_date=previsao_inicio,
+                    end_date=previsao_fim,
                     timezone=plantio["timezone"],
                 )
 
-                resultados_antes = simulate_irrigation(
+                weather_data_expandido = merge_weather_data_by_date(weather_data, future_weather)
+
+                resultados_expandido = simulate_irrigation(
                     crop=crop,
                     soil=soil,
                     sistema_irrigacao=plantio["sistema_irrigacao"],
                     data_plantio=data_plantio,
-                    weather_data=weather_data,
+                    weather_data=weather_data_expandido,
                     z_override_m=plantio["z_override_m"],
                     irrigacao_real_por_dia=irrigacao_map,
-                    modo_automatico=modo_auto,
+                    modo_automatico=True,
                     modo_calculo=modo_calculo_key,
                 )
 
-                if not resultados_antes:
-                    st.error("Não foi possível gerar resultados para o período.")
+                resultados_futuros = [
+                    res for res in resultados_expandido
+                    if data_operacao <= res.data <= previsao_fim
+                ]
+
+                if not resultados_futuros:
+                    st.warning("Não foi possível gerar a projeção futura.")
                 else:
-                    hoje_previsto = resultados_antes[-1]
-
-                    c3, c4, c5, c6 = st.columns(4)
-                    c3.metric("DAP", hoje_previsto.dap)
-                    c4.metric("Dr atual (mm)", f"{hoje_previsto.deplecao_mm:.3f}")
-                    c5.metric("LLI recomendada (mm)", f"{hoje_previsto.lli_mm:.3f}")
-                    c6.metric("LBI recomendada (mm)", f"{hoje_previsto.lbi_mm:.3f}")
-
-                    st.markdown("### Resumo do dia")
-                    resumo_df = pd.DataFrame([{
-                        "Data": hoje_previsto.data.strftime("%d/%m/%Y"),
-                        "Modo": modo_calculo,
-                        "DAP": hoje_previsto.dap,
-                        "Fase": hoje_previsto.fase,
-                        "Kc": hoje_previsto.kc,
-                        "Ks": hoje_previsto.ks,
-                        "Kl": hoje_previsto.kl,
-                        "ETo (mm)": hoje_previsto.eto_mm,
-                        "ETc (mm)": hoje_previsto.etc_mm,
-                        "P (mm)": hoje_previsto.p_mm,
-                        "Dr (mm)": hoje_previsto.deplecao_mm,
-                        "LLI (mm)": hoje_previsto.lli_mm,
-                        "LBI (mm)": hoje_previsto.lbi_mm,
-                    }])
-                    st.dataframe(resumo_df, width="stretch")
-
-                    st.markdown("### Registrar decisão do dia")
-
-                    decisao = st.radio(
-                        "O que deseja registrar para este dia?",
-                        ["Não irrigar", "Irrigar"]
+                    eficiencia_sim = IRRIGATION_EFFICIENCY[normalize_name(plantio["sistema_irrigacao"])]
+                    df_sim = build_planilha_prof_df(
+                        results=resultados_futuros,
+                        soil=soil,
+                        crop=crop,
+                        eficiencia=eficiencia_sim,
+                        pef_mode=pef_mode_sim,
+                        pef_percentual=pef_percentual_sim,
                     )
 
-                    irrigacao_informada = 0.0
-                    if decisao == "Irrigar":
-                        irrigacao_informada = st.number_input(
-                            "Lâmina real aplicada (mm)",
-                            min_value=0.0,
-                            value=float(hoje_previsto.lli_mm),
-                            format="%.3f"
+                    ctab1, ctab2 = st.tabs(["Tabela da projeção", "Gráfico da projeção"])
+
+                    with ctab1:
+                        st.write(
+                            f"Projeção de **{previsao_inicio.strftime('%d/%m/%Y')}** até "
+                            f"**{previsao_fim.strftime('%d/%m/%Y')}**."
+                        )
+                        st.dataframe(df_sim, width="stretch", hide_index=True)
+
+                        st.download_button(
+                            "Baixar projeção em CSV",
+                            data=df_sim.to_csv(index=False).encode("utf-8-sig"),
+                            file_name=f"projecao_futura_plantio_{plantio['id']}.csv",
+                            mime="text/csv",
+                            key=f"download_sim_csv_{plantio['id']}",
+                            use_container_width=True,
                         )
 
-                    with st.form("form_salvar_dia"):
-                        salvar_dia = st.form_submit_button("Salvar dia")
+                    with ctab2:
+                        df_sim_grafico = df_sim.copy()
+                        for col in ["DRA (mm)", "DP", "LLI", "LBI", "ETc (mm)", "Pef", "LA f"]:
+                            if col in df_sim_grafico.columns:
+                                df_sim_grafico[col] = pd.to_numeric(df_sim_grafico[col], errors="coerce")
 
-                    if salvar_dia:
-                        irrigacao_map_atualizada = dict(irrigacao_map)
-                        irrigacao_map_atualizada[data_operacao] = float(irrigacao_informada)
-
-                        resultados_finais = simulate_irrigation(
-                            crop=crop,
-                            soil=soil,
-                            sistema_irrigacao=plantio["sistema_irrigacao"],
-                            data_plantio=data_plantio,
-                            weather_data=weather_data,
-                            z_override_m=plantio["z_override_m"],
-                            irrigacao_real_por_dia=irrigacao_map_atualizada,
-                            modo_automatico=modo_auto,
-                            modo_calculo=modo_calculo_key,
-                        )
-
-                        dia_final = resultados_finais[-1]
-                        upsert_day_result(
-                            plantio_id=plantio_id,
-                            irrigou=(decisao == "Irrigar"),
-                            result=dia_final,
-                        )
-
-                        clear_app_caches()
-                        st.success("Dia salvo com sucesso.")
-                        st.rerun()
-
-                    st.markdown("### Evolução até a data selecionada")
-                    df_resultados = results_to_dataframe(resultados_antes)
-                    st.dataframe(df_resultados, width="stretch")
-
+                        colunas_plot = [c for c in ["DP", "DRA (mm)", "LA f"] if c in df_sim_grafico.columns]
+                        if colunas_plot:
+                            st.line_chart(
+                                df_sim_grafico.set_index("Data")[colunas_plot],
+                                height=320,
+                            )
+                        else:
+                            st.info("Não há colunas suficientes para exibir o gráfico.")
             except Exception as e:
-                st.error(f"Erro ao processar operação diária: {e}")
+                st.error(f"Erro ao processar a projeção futura: {e}")
+
+    except Exception as e:
+        st.error(f"Erro ao processar a operação diária: {e}")
 
 
-with aba3:
+def render_historico():
     st.subheader("Histórico do plantio")
+    st.write("Consulte os dias já salvos e exporte o histórico em CSV.")
 
     plantios_df = list_plantios_com_historico()
 
     if plantios_df.empty:
-        st.info("Ainda não há plantios com histórico salvo.")
-    else:
-        opcoes_hist = {
-            f"ID {row['id']} - {row['nome']} - {row['cultura_key']} - plantio {row['data_plantio']}": str(row["id"])
-            for _, row in plantios_df.iterrows()
-        }
+        render_empty_state("Ainda não há plantios com histórico salvo.")
+        return
 
-        selecionado_hist = st.selectbox("Escolha o plantio para ver o histórico", list(opcoes_hist.keys()), key="hist")
-        plantio_hist_id = opcoes_hist[selecionado_hist]
+    opcoes_hist = {
+        format_plantio_label(row): str(row["id"])
+        for _, row in plantios_df.iterrows()
+    }
 
-        hist_df = load_history_df(plantio_hist_id)
+    plantio_hist_label = st.selectbox("Escolha o plantio", list(opcoes_hist.keys()), key="hist")
+    plantio_hist_id = opcoes_hist[plantio_hist_label]
 
-        if hist_df.empty:
-            st.warning("Esse plantio ainda não possui dias salvos.")
-        else:
-            st.dataframe(hist_df, width="stretch")
+    hist_df = load_history_df(plantio_hist_id)
 
-            csv_bytes = hist_df.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
-            st.download_button(
-                "Baixar histórico em CSV",
-                data=csv_bytes,
-                file_name=f"historico_plantio_{plantio_hist_id}.csv",
-                mime="text/csv",
-            )
+    if hist_df.empty:
+        st.warning("Esse plantio ainda não possui dias salvos.")
+        return
 
-            st.markdown("### Ações de exclusão")
+    st.dataframe(hist_df, width="stretch", hide_index=True)
 
-            c1, c2 = st.columns(2)
+    csv_bytes = hist_df.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
+    st.download_button(
+        "Baixar histórico em CSV",
+        data=csv_bytes,
+        file_name=f"historico_plantio_{plantio_hist_id}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
 
-            with c1:
-                st.markdown("#### Apagar um dia do histórico")
-                datas_hist = hist_df["Data"].tolist()
-                data_escolhida = st.selectbox("Escolha a data para apagar", datas_hist)
+    st.markdown("### Ações de exclusão")
+    c1, c2 = st.columns(2)
 
-                with st.form("form_apagar_dia"):
-                    apagar_dia = st.form_submit_button("Apagar dia selecionado")
-                if apagar_dia:
-                    data_iso = datetime.strptime(data_escolhida, "%d/%m/%Y").strftime("%Y-%m-%d")
-                    delete_history_day(plantio_hist_id, data_iso)
-                    clear_app_caches()
-                    st.success("Dia apagado com sucesso.")
-                    st.rerun()
+    with c1:
+        with st.form("form_excluir_dia_hist"):
+            data_excluir = st.text_input("Data para excluir (AAAA-MM-DD)")
+            excluir_dia = st.form_submit_button("Excluir dia")
 
-            with c2:
-                st.markdown("#### Apagar tudo")
-                confirmar_apagar_hist = st.checkbox("Confirmo apagar todo o histórico deste plantio")
-                with st.form("form_apagar_historico"):
-                    apagar_hist = st.form_submit_button("Apagar histórico completo")
-                if apagar_hist:
-                    if confirmar_apagar_hist:
-                        delete_all_history(plantio_hist_id)
-                        clear_app_caches()
-                        st.success("Histórico completo apagado.")
-                        st.rerun()
-                    else:
-                        st.warning("Marque a confirmação antes de apagar.")
+        if excluir_dia:
+            try:
+                delete_history_day(plantio_hist_id, data_excluir)
+                clear_app_caches()
+                st.success("Dia excluído com sucesso.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao excluir dia: {e}")
 
-            st.markdown("### Remover plantio inteiro")
-            confirmar_apagar_plantio = st.checkbox("Confirmo apagar o plantio e todo o histórico dele")
+    with c2:
+        with st.form("form_excluir_todo_hist"):
+            excluir_tudo = st.form_submit_button("Excluir todo o histórico", use_container_width=True)
 
-            with st.form("form_apagar_plantio"):
-                apagar_plantio = st.form_submit_button("Apagar plantio")
-            if apagar_plantio:
-                if confirmar_apagar_plantio:
-                    delete_plantio(plantio_hist_id)
-                    clear_app_caches()
-                    st.success("Plantio apagado com sucesso.")
-                    st.rerun()
-                else:
-                    st.warning("Marque a confirmação antes de apagar o plantio.")
+        if excluir_tudo:
+            try:
+                delete_all_history(plantio_hist_id)
+                clear_app_caches()
+                st.success("Histórico excluído com sucesso.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao excluir histórico: {e}")
 
 
-with aba4:
-    st.subheader("Banco de culturas e solos")
+def render_cadastros():
+    st.subheader("Cadastros")
+    st.write("Gerencie os registros base do sistema.")
 
-    subaba1, subaba2 = st.tabs(["Culturas", "Solos"])
+    tab_solos, tab_plantios, tab_culturas = st.tabs(["Solos", "Plantios / Talhões", "Culturas"])
 
-    with subaba1:
-        st.markdown("### Banco de culturas")
-        culturas_df = crops_to_df()
-        st.dataframe(culturas_df, width="stretch")
-
-        csv_culturas = culturas_df.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
-        st.download_button(
-            "Baixar culturas em CSV",
-            data=csv_culturas,
-            file_name="banco_culturas.csv",
-            mime="text/csv",
-        )
-
-    with subaba2:
-        st.markdown("### Banco de solos")
+    with tab_solos:
         solos_df = load_solos_df()
-        st.dataframe(solos_df, width="stretch")
 
-        st.markdown("### Cadastrar novo solo")
-        with st.form("form_solo"):
-            s1, s2, s3, s4 = st.columns(4)
-            solo_nome = s1.text_input("Nome do solo", value="Novo solo")
-            solo_ucc = s2.number_input("Ucc", min_value=0.0, value=0.32, format="%.3f")
-            solo_upmp = s3.number_input("Upmp", min_value=0.0, value=0.20, format="%.3f")
-            solo_ds = s4.number_input("Ds", min_value=0.0, value=1.25, format="%.3f")
+        col_form, col_lista = st.columns([1, 1.3])
 
-            salvar_solo = st.form_submit_button("Salvar solo")
+        with col_form:
+            st.markdown("### Novo solo")
+            with st.form("form_novo_solo"):
+                nome_solo = st.text_input("Nome do solo")
+                c1, c2, c3 = st.columns(3)
+                ucc = c1.number_input("Ucc", min_value=0.0, value=0.30, format="%.3f")
+                upmp = c2.number_input("Upmp", min_value=0.0, value=0.15, format="%.3f")
+                ds = c3.number_input("Ds", min_value=0.0, value=1.30, format="%.3f")
+                salvar_solo = st.form_submit_button("Salvar solo", use_container_width=True)
 
             if salvar_solo:
                 try:
-                    create_solo(solo_nome, solo_ucc, solo_upmp, solo_ds)
+                    create_solo(nome_solo, ucc, upmp, ds)
                     clear_app_caches()
                     st.success("Solo cadastrado com sucesso.")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Erro ao salvar solo: {e}")
+                    st.error(f"Erro ao cadastrar solo: {e}")
 
-        if not solos_df.empty:
-            st.markdown("### Apagar solo")
-            opcoes_delete_solo = {
-                f"ID {row['id']} - {row['nome']}": str(row["id"])
-                for _, row in solos_df.iterrows()
+        with col_lista:
+            st.markdown("### Solos cadastrados")
+            if solos_df.empty:
+                st.info("Nenhum solo cadastrado.")
+            else:
+                solos_exibicao = solos_df.copy()
+                if "created_at" in solos_exibicao.columns:
+                    solos_exibicao = solos_exibicao.drop(columns=["created_at"], errors="ignore")
+
+                st.dataframe(solos_exibicao, width="stretch", hide_index=True)
+
+                opcoes_delete = {
+                    f"{row['nome']} | Ucc={row['ucc']:.3f} | Upmp={row['upmp']:.3f} | Ds={row['ds']:.3f}": row["id"]
+                    for _, row in solos_df.iterrows()
+                }
+
+                with st.form("form_excluir_solo"):
+                    solo_delete_label = st.selectbox("Selecione um solo para excluir", list(opcoes_delete.keys()))
+                    excluir_solo = st.form_submit_button("Excluir solo", use_container_width=True)
+
+                if excluir_solo:
+                    try:
+                        delete_solo(opcoes_delete[solo_delete_label])
+                        clear_app_caches()
+                        st.success("Solo excluído com sucesso.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao excluir solo: {e}")
+
+    with tab_plantios:
+        st.markdown("### Plantios e talhões cadastrados")
+        plantios_df = list_plantios()
+
+        if plantios_df.empty:
+            st.info("Nenhum plantio ou talhão cadastrado.")
+        else:
+            plantios_exibicao = plantios_df.copy()
+
+            if "data_plantio" in plantios_exibicao.columns:
+                plantios_exibicao["data_plantio"] = pd.to_datetime(
+                    plantios_exibicao["data_plantio"], errors="coerce"
+                ).dt.strftime("%d/%m/%Y")
+
+            if "cultura_key" in plantios_exibicao.columns:
+                plantios_exibicao["cultura"] = plantios_exibicao["cultura_key"].apply(
+                    lambda x: CROPS[x].nome if x in CROPS else x
+                )
+
+            colunas_preferidas = [
+                "nome",
+                "local",
+                "cultura",
+                "sistema_irrigacao",
+                "data_plantio",
+                "latitude",
+                "longitude",
+                "timezone",
+            ]
+            colunas_existentes = [c for c in colunas_preferidas if c in plantios_exibicao.columns]
+
+            st.dataframe(
+                plantios_exibicao[colunas_existentes],
+                width="stretch",
+                hide_index=True,
+            )
+
+            st.markdown("### Excluir plantio ou talhão")
+            opcoes_plantio_delete = {
+                format_plantio_label(row): str(row["id"])
+                for _, row in plantios_df.iterrows()
             }
-            solo_delete_label = st.selectbox("Escolha o solo para apagar", list(opcoes_delete_solo.keys()))
-            solo_delete_id = opcoes_delete_solo[solo_delete_label]
 
-            confirmar_solo = st.checkbox("Confirmo apagar este solo")
-            with st.form("form_apagar_solo"):
-                apagar_solo = st.form_submit_button("Apagar solo")
-            if apagar_solo:
-                if confirmar_solo:
-                    delete_solo(solo_delete_id)
-                    clear_app_caches()
-                    st.success("Solo apagado com sucesso.")
-                    st.rerun()
+            with st.form("form_excluir_plantio"):
+                plantio_delete_label = st.selectbox(
+                    "Selecione o plantio ou talhão",
+                    list(opcoes_plantio_delete.keys()),
+                )
+                excluir_plantio_confirm = st.checkbox(
+                    "Confirmo que desejo excluir este cadastro e todo o histórico relacionado",
+                    value=False,
+                )
+                excluir_plantio_btn = st.form_submit_button(
+                    "Excluir plantio / talhão",
+                    use_container_width=True,
+                )
+
+            if excluir_plantio_btn:
+                if not excluir_plantio_confirm:
+                    st.warning("Marque a confirmação para excluir o cadastro.")
                 else:
-                    st.warning("Marque a confirmação antes de apagar.")
+                    try:
+                        delete_plantio(opcoes_plantio_delete[plantio_delete_label])
+                        clear_app_caches()
+                        st.success("Plantio ou talhão excluído com sucesso.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao excluir plantio ou talhão: {e}")
 
+    with tab_culturas:
+        st.markdown("### Culturas disponíveis")
+        st.dataframe(crops_to_df(), width="stretch", hide_index=True)
 
-with aba5:
-    st.subheader("Explicação dos cálculos agronômicos")
+def build_calculos_completos_df(
+    plantio: dict,
+    crop: Crop,
+    soil: Soil,
+    data_final: date,
+    modo_calculo: str,
+    pef_mode: str,
+    pef_percentual: float,
+) -> pd.DataFrame:
+    data_plantio = to_date(plantio["data_plantio"])
+
+    weather_data = fetch_weather_open_meteo(
+        latitude=plantio["latitude"],
+        longitude=plantio["longitude"],
+        start_date=data_plantio,
+        end_date=data_final,
+        timezone=plantio["timezone"],
+    )
+
+    irrigacao_map = get_irrigation_map(plantio["id"])
+
+    resultados = simulate_irrigation(
+        crop=crop,
+        soil=soil,
+        sistema_irrigacao=plantio["sistema_irrigacao"],
+        data_plantio=data_plantio,
+        weather_data=weather_data,
+        z_override_m=plantio["z_override_m"],
+        irrigacao_real_por_dia=irrigacao_map,
+        modo_automatico=True,
+        modo_calculo=modo_calculo,
+    )
+
+    eficiencia = IRRIGATION_EFFICIENCY[normalize_name(plantio["sistema_irrigacao"])]
+
+    df_planilha = build_planilha_prof_df(
+        results=resultados,
+        soil=soil,
+        crop=crop,
+        eficiencia=eficiencia,
+        pef_mode=pef_mode,
+        pef_percentual=pef_percentual,
+    )
+
+    rows = []
+    for i, r in enumerate(resultados):
+        z_m = compute_effective_z_m(
+            crop=crop,
+            dap=r.dap,
+            modo_calculo=modo_calculo,
+            z_override_m=plantio["z_override_m"],
+        )
+        sr_mm = compute_sr_mm(z_m)
+
+        # Kc p = Kc potencial do dia, antes do efeito de estresse hídrico e Kl
+        kc_p = round(r.kc * r.kl, 4)
+
+        row_plan = df_planilha.iloc[i].to_dict()
+
+        rows.append({
+            "Data": r.data.strftime("%d/%m/%Y"),
+            "DAP": r.dap,
+            "Fase": explain_phase_name(r.fase),
+            "AKc": round(r.akc, 5),
+            "Kc p": kc_p,
+            "Kc in": round(crop.kc_in, 4),
+            "Kc cv": round(crop.kc_cv, 4),
+            "Kc m": round(crop.kc_m, 4),
+            "Kc final": round(crop.kc_final, 4),
+            "Kc": round(r.kc, 4),
+            "Kl": round(r.kl, 4),
+            "Ks": round(r.ks, 4),
+            "Pef": row_plan["Pef"],
+            "ETo": row_plan["ETo"],
+            "ETc (mm)": row_plan["ETc (mm)"],
+            "SR (mm)": round(sr_mm, 3),
+            "P-ETc": row_plan["P-ETc"],
+            "(P+I-ETc)": row_plan["(P+I-ETc)"],
+            "DTA (mm)": row_plan["DTA (mm)"],
+            "DRA (mm)": row_plan["DRA (mm)"],
+            "LA in": row_plan["LA in"],
+            "LA antes irrigação": row_plan["LA antes irrigação"],
+            "LA f": row_plan["LA f"],
+            "LA mi": row_plan["LA mi"],
+            "LLI": row_plan["LLI"],
+            "LBI": row_plan["LBI"],
+            "LLI aplicada": row_plan["LLI aplicada"],
+            "DP": row_plan["DP"],
+        })
+
+    return pd.DataFrame(rows)
+
+def render_calculos():
+    st.subheader("Cálculos")
+    st.write("Confira os parâmetros da cultura e a memória completa dos cálculos diários do plantio.")
 
     plantios_df = list_plantios()
-
     if plantios_df.empty:
-        st.info("Cadastre um plantio primeiro para visualizar os cálculos.")
-    else:
-        opcoes_calc = {
-            f"ID {row['id']} - {row['nome']} - {row['cultura_key']} - plantio {row['data_plantio']}": str(row["id"])
-            for _, row in plantios_df.iterrows()
-        }
+        render_empty_state("Cadastre um plantio para usar esta área.")
+        return
 
-        selecionado_calc = st.selectbox(
-            "Escolha o plantio para explicar os cálculos",
-            list(opcoes_calc.keys()),
-            key="calc_plantio"
-        )
+    opcoes = {
+        format_plantio_label(row): str(row["id"])
+        for _, row in plantios_df.iterrows()
+    }
 
-        plantio_calc_id = opcoes_calc[selecionado_calc]
+    with st.form("form_calculos_completos"):
+        st.markdown("### Seleção do plantio")
+        plantio_calc_label = st.selectbox("Escolha o plantio", list(opcoes.keys()))
+        plantio_calc_id = opcoes[plantio_calc_label]
         plantio = get_plantio(plantio_calc_id)
 
-        crop = CROPS[plantio["cultura_key"]]
-        soil = Soil(ucc=plantio["ucc"], upmp=plantio["upmp"], ds=plantio["ds"])
         data_plantio = to_date(plantio["data_plantio"])
 
-        data_calculo = st.date_input(
-            "Data de referência para explicar os cálculos",
-            value=date.today(),
-            key="calc_data"
+        st.markdown("### Configuração da análise")
+        c1, c2, c3, c4 = st.columns(4)
+
+        data_final = c1.date_input(
+            "Calcular até a data",
+            value=max(date.today(), data_plantio),
+            min_value=data_plantio,
+            key=f"data_final_calculos_{plantio_calc_id}",
         )
 
-        modo_calculo_calc = st.radio(
-            "Modo de cálculo",
-            ["FAO-56", "Planilha"],
-            horizontal=True,
-            key="calc_modo",
-            help="FAO-56 usa Z fixo da cultura. Planilha usa SR = 100 mm (Z = 0,10 m) nos primeiros 10 dias."
+        modo_calculo = c2.selectbox(
+            "Método de cálculo",
+            ["fao56", "planilha"],
+            format_func=lambda x: "FAO-56" if x == "fao56" else "Planilha",
+            key=f"modo_calculo_calc_{plantio_calc_id}",
         )
-        modo_calculo_calc_key = "fao56" if modo_calculo_calc == "FAO-56" else "planilha"
 
-        if data_calculo < data_plantio:
-            st.error("A data de referência não pode ser anterior à data de plantio.")
-        else:
-            try:
-                irrigacao_map = get_irrigation_map(plantio_calc_id)
+        pef_mode = c3.selectbox(
+            "Precipitação efetiva",
+            ["igual_p", "percentual"],
+            format_func=lambda x: "Usar precipitação total" if x == "igual_p" else "Usar percentual da precipitação",
+            key=f"pef_mode_calc_{plantio_calc_id}",
+        )
 
-                weather_data = fetch_weather_open_meteo(
-                    latitude=float(plantio["latitude"]),
-                    longitude=float(plantio["longitude"]),
-                    start_date=data_plantio,
-                    end_date=data_calculo,
-                    timezone=plantio["timezone"],
-                )
+        pef_percentual = c4.number_input(
+            "Percentual da precipitação efetiva",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.05,
+            format="%.2f",
+            disabled=(pef_mode != "percentual"),
+            key=f"pef_percentual_calc_{plantio_calc_id}",
+        )
 
-                resultados = simulate_irrigation(
-                    crop=crop,
-                    soil=soil,
-                    sistema_irrigacao=plantio["sistema_irrigacao"],
-                    data_plantio=data_plantio,
-                    weather_data=weather_data,
-                    z_override_m=plantio["z_override_m"],
-                    irrigacao_real_por_dia=irrigacao_map,
-                    modo_automatico=True,
-                    modo_calculo=modo_calculo_calc_key,
-                )
+        calcular = st.form_submit_button("Gerar memória de cálculo", use_container_width=True)
 
-                if not resultados:
-                    st.warning("Não há resultados para a data selecionada.")
-                else:
-                    r = resultados[-1]
+    if not calcular and "calc_plantio_id" not in st.session_state:
+        return
 
-                    z_m = compute_effective_z_m(
-                        crop=crop,
-                        dap=r.dap,
-                        modo_calculo=modo_calculo_calc_key,
-                        z_override_m=plantio["z_override_m"],
-                    )
-                    f = crop.fator_f
-                    theta_fc = soil.ucc * soil.ds
-                    theta_wp = soil.upmp * soil.ds
-                    sr_mm = compute_sr_mm(z_m)
-                    kl = compute_kl_from_sr_mm(sr_mm)
-                    taw = compute_taw_mm_from_z(soil, z_m)
-                    raw = compute_raw_mm(taw, f)
+    st.session_state["calc_plantio_id"] = plantio_calc_id
+    st.session_state["calc_data_final"] = data_final
+    st.session_state["calc_modo"] = modo_calculo
+    st.session_state["calc_pef_mode"] = pef_mode
+    st.session_state["calc_pef_percentual"] = pef_percentual
 
-                    st.markdown("## 1. Dados usados no cálculo")
-                    dados_df = pd.DataFrame([{
-                        "Plantio": plantio["nome"],
-                        "Cultura": crop.nome,
-                        "Sistema de irrigação": plantio["sistema_irrigacao"],
-                        "Modo de cálculo": modo_calculo_calc,
-                        "Data de plantio": data_plantio.strftime("%d/%m/%Y"),
-                        "Data analisada": data_calculo.strftime("%d/%m/%Y"),
-                        "DAP": r.dap,
-                        "Fase": explain_phase_name(r.fase),
-                        "Ucc": soil.ucc,
-                        "Upmp": soil.upmp,
-                        "Ds": soil.ds,
-                        "Z (m)": z_m,
-                        "f": f,
-                        "ETo (mm)": r.eto_mm,
-                        "P (mm)": r.p_mm,
-                        "Irrigação real (mm)": r.irrigacao_real_mm,
-                    }])
-                    st.dataframe(dados_df, width="stretch")
+    plantio = get_plantio(st.session_state["calc_plantio_id"])
+    crop = CROPS[plantio["cultura_key"]]
+    soil = Soil(
+        ucc=float(plantio["ucc"]),
+        upmp=float(plantio["upmp"]),
+        ds=float(plantio["ds"]),
+    )
 
-                    st.markdown("## 2. Cálculos do solo")
+    data_final = st.session_state["calc_data_final"]
+    modo_calculo = st.session_state["calc_modo"]
+    pef_mode = st.session_state["calc_pef_mode"]
+    pef_percentual = st.session_state["calc_pef_percentual"]
 
-                    calc_solo_df = pd.DataFrame([
-                        {
-                            "Variável": "θfc",
-                            "Fórmula": "θfc = Ucc × Ds",
-                            "Substituição": f"{soil.ucc:.3f} × {soil.ds:.3f}",
-                            "Resultado": round(theta_fc, 4),
-                            "Explicação": "Estimativa da umidade volumétrica na capacidade de campo."
-                        },
-                        {
-                            "Variável": "θwp",
-                            "Fórmula": "θwp = Upmp × Ds",
-                            "Substituição": f"{soil.upmp:.3f} × {soil.ds:.3f}",
-                            "Resultado": round(theta_wp, 4),
-                            "Explicação": "Estimativa da umidade volumétrica no ponto de murcha permanente."
-                        },
-                        {
-                            "Variável": "SR",
-                            "Fórmula": "SR = Z × 1000",
-                            "Substituição": f"{z_m:.3f} × 1000",
-                            "Resultado": round(sr_mm, 3),
-                            "Explicação": "Profundidade efetiva do sistema radicular em milímetros."
-                        },
-                        {
-                            "Variável": "Kl",
-                            "Fórmula": "Kl = 0,1 × √SR",
-                            "Substituição": f"0,1 × √{sr_mm:.3f}",
-                            "Resultado": round(kl, 4),
-                            "Explicação": "Coeficiente ligado à profundidade radicular conforme a lógica usada na planilha."
-                        },
-                        {
-                            "Variável": "TAW",
-                            "Fórmula": "TAW = 1000 × (θfc - θwp) × Z",
-                            "Substituição": f"1000 × ({theta_fc:.4f} - {theta_wp:.4f}) × {z_m:.3f}",
-                            "Resultado": round(taw, 3),
-                            "Explicação": "Água total disponível no solo."
-                        },
-                        {
-                            "Variável": "RAW",
-                            "Fórmula": "RAW = TAW × f",
-                            "Substituição": f"{taw:.3f} × {f:.3f}",
-                            "Resultado": round(raw, 3),
-                            "Explicação": "Água facilmente disponível antes de ocorrer estresse hídrico."
-                        },
-                    ])
-                    st.dataframe(calc_solo_df, width="stretch")
+    try:
+        render_resumo_plantio_card(plantio)
 
-                    st.markdown("## 3. Cálculos da cultura")
+        st.markdown("### Parâmetros fixos usados na conta")
+        p1, p2, p3, p4, p5 = st.columns(5)
+        p1.metric("Kc in", f"{crop.kc_in:.4f}")
+        p2.metric("Kc cv", f"{crop.kc_cv:.4f}")
+        p3.metric("Kc m", f"{crop.kc_m:.4f}")
+        p4.metric("Kc final", f"{crop.kc_final:.4f}")
+        p5.metric("Fator f", f"{crop.fator_f:.2f}")
 
-                    akc = akc_values(crop)
-                    limites = stage_limits(crop)
+        p6, p7, p8, p9 = st.columns(4)
+        z_ref = plantio["z_override_m"] if plantio["z_override_m"] is not None else crop.z_m
+        p6.metric("Z de referência (m)", f"{float(z_ref):.2f}")
+        p7.metric("Ucc", f"{soil.ucc:.3f}")
+        p8.metric("Upmp", f"{soil.upmp:.3f}")
+        p9.metric("Ds", f"{soil.ds:.3f}")
 
-                    calc_cultura_df = pd.DataFrame([
-                        {
-                            "Item": "DAP",
-                            "Fórmula": "DAP = (data atual - data de plantio) + 1",
-                            "Resultado": r.dap,
-                            "Explicação": "Dias após o plantio."
-                        },
-                        {
-                            "Item": "Fase",
-                            "Fórmula": "Definida pelos limites das durações",
-                            "Resultado": explain_phase_name(r.fase),
-                            "Explicação": (
-                                f"Fim inicial={limites['fim_in']}, "
-                                f"fim desenvolvimento={limites['fim_cv']}, "
-                                f"fim médio={limites['fim_medio']}, "
-                                f"fim final={limites['fim_final']}."
-                            )
-                        },
-                        {
-                            "Item": "AKc inicial",
-                            "Fórmula": "AKc_in = Kc_in",
-                            "Resultado": round(akc["akc_in"], 5),
-                            "Explicação": "Valor usado na fase inicial."
-                        },
-                        {
-                            "Item": "AKc desenvolvimento",
-                            "Fórmula": "AKc_cv = (Kc_m - Kc_cv) / duração_CV",
-                            "Resultado": round(akc["akc_cv"], 5),
-                            "Explicação": "Inclinação da variação do Kc no desenvolvimento."
-                        },
-                        {
-                            "Item": "AKc médio",
-                            "Fórmula": "AKc_m = 0",
-                            "Resultado": round(akc["akc_m"], 5),
-                            "Explicação": "Na fase média o Kc fica constante."
-                        },
-                        {
-                            "Item": "AKc final",
-                            "Fórmula": "AKc_final = (Kc_final - Kc_m) / duração_final",
-                            "Resultado": round(akc["akc_final"], 5),
-                            "Explicação": "Inclinação da variação do Kc na fase final."
-                        },
-                        {
-                            "Item": "Kc do dia",
-                            "Fórmula": "Depende da fase fenológica",
-                            "Resultado": round(r.kc, 4),
-                            "Explicação": "Coeficiente de cultura calculado para o DAP selecionado."
-                        },
-                    ])
-                    st.dataframe(calc_cultura_df, width="stretch")
+        df_calculos = build_calculos_completos_df(
+            plantio=plantio,
+            crop=crop,
+            soil=soil,
+            data_final=data_final,
+            modo_calculo=modo_calculo,
+            pef_mode=pef_mode,
+            pef_percentual=pef_percentual,
+        )
 
-                    st.markdown("## 4. Cálculos hídricos do dia")
+        if df_calculos.empty:
+            st.warning("Não foi possível gerar os cálculos para o período informado.")
+            return
 
-                    dr_anterior = 0.0
-                    if len(resultados) >= 2:
-                        dr_anterior = resultados[-2].deplecao_mm
+        st.markdown("### Memória completa de cálculo")
+        st.dataframe(df_calculos, width="stretch", hide_index=True)
 
-                    calc_hidrico_df = pd.DataFrame([
-                        {
-                            "Variável": "Ks",
-                            "Fórmula": (
-                                "Ks = 1, se Dr ≤ RAW; "
-                                "senão Ks = (TAW - Dr)/(TAW - RAW)"
-                            ),
-                            "Resultado": round(r.ks, 4),
-                            "Explicação": "Coeficiente de estresse hídrico."
-                        },
-                        {
-                            "Variável": "ETc",
-                            "Fórmula": "ETc = ETo × Kc × Ks × Kl",
-                            "Substituição": f"{r.eto_mm:.3f} × {r.kc:.4f} × {r.ks:.4f} × {r.kl:.4f}",
-                            "Resultado": round(r.etc_mm, 3),
-                            "Explicação": "Evapotranspiração da cultura ajustada."
-                        },
-                        {
-                            "Variável": "Dr anterior",
-                            "Fórmula": "Valor acumulado do dia anterior",
-                            "Resultado": round(dr_anterior, 3),
-                            "Explicação": "Depleção existente antes do balanço do dia."
-                        },
-                        {
-                            "Variável": "Balanço hídrico",
-                            "Fórmula": "Dr = Dr_anterior - P - I_real + ETc",
-                            "Substituição": f"{dr_anterior:.3f} - {r.p_mm:.3f} - {r.irrigacao_real_mm:.3f} + {r.etc_mm:.3f}",
-                            "Resultado": round(r.deplecao_mm, 3),
-                            "Explicação": "Atualiza a depleção diária de água no solo."
-                        },
-                        {
-                            "Variável": "LLI",
-                            "Fórmula": "LLI = Dr, se Dr ≥ RAW; senão 0",
-                            "Resultado": round(r.lli_mm, 3),
-                            "Explicação": "Lâmina líquida necessária para repor a água no solo."
-                        },
-                        {
-                            "Variável": "LBI",
-                            "Fórmula": "LBI = LLI / eficiência",
-                            "Substituição": f"{r.lli_mm:.3f} / {IRRIGATION_EFFICIENCY[normalize_name(plantio['sistema_irrigacao'])]:.2f}",
-                            "Resultado": round(r.lbi_mm, 3),
-                            "Explicação": "Lâmina bruta, considerando a eficiência do sistema."
-                        },
-                    ])
-                    st.dataframe(calc_hidrico_df, width="stretch")
+        st.markdown("### Indicadores do último dia calculado")
+        ultimo = df_calculos.iloc[-1]
 
-                    st.markdown("## 5. Interpretação do resultado")
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("DAP", int(ultimo["DAP"]))
+        m2.metric("Kc do dia", f"{float(ultimo['Kc']):.4f}")
+        m3.metric("ETc do dia", f"{float(ultimo['ETc (mm)']):.3f} mm")
+        m4.metric("LLI do dia", f"{float(ultimo['LLI']):.3f} mm")
+        m5.metric("LBI do dia", f"{float(ultimo['LBI']):.3f} mm")
 
-                    st.write(f"**Data analisada:** {r.data.strftime('%d/%m/%Y')}")
-                    st.write(f"**DAP:** {r.dap}")
-                    st.write(f"**Fase da cultura:** {explain_phase_name(r.fase)}")
-                    st.write(f"**Kc do dia:** {r.kc:.4f}")
-                    st.write(f"**Ks do dia:** {r.ks:.4f}")
-                    st.write(f"**Kl do dia:** {r.kl:.4f}")
-                    st.write(f"**ETo:** {r.eto_mm:.3f} mm")
-                    st.write(f"**ETc:** {r.etc_mm:.3f} mm")
-                    st.write(f"**Precipitação:** {r.p_mm:.3f} mm")
-                    st.write(f"**Irrigação real registrada:** {r.irrigacao_real_mm:.3f} mm")
-                    st.write(f"**Depleção final (Dr):** {r.deplecao_mm:.3f} mm")
-                    st.write(f"**RAW:** {r.raw_mm:.3f} mm")
-                    st.write(f"**LLI recomendada:** {r.lli_mm:.3f} mm")
-                    st.write(f"**LBI recomendada:** {r.lbi_mm:.3f} mm")
+        st.markdown("### Gráficos")
+        tab_g1, tab_g2, tab_g3 = st.tabs(["Balanço hídrico", "Coeficientes", "Lâminas"])
 
-                    if r.deplecao_mm >= r.raw_mm:
-                        st.warning(
-                            "Neste dia, a depleção ficou igual ou acima da RAW. "
-                            "Por isso o sistema recomenda irrigação."
-                        )
-                    else:
-                        st.success(
-                            "Neste dia, a depleção ficou abaixo da RAW. "
-                            "Por isso ainda não há necessidade de irrigação pela regra automática."
-                        )
+        with tab_g1:
+            graf1 = df_calculos.copy()
+            for col in ["Pef", "ETc (mm)", "DRA (mm)", "DTA (mm)", "DP"]:
+                graf1[col] = pd.to_numeric(graf1[col], errors="coerce")
+            st.line_chart(
+                graf1.set_index("Data")[["Pef", "ETc (mm)", "DRA (mm)", "DTA (mm)", "DP"]],
+                height=320,
+            )
 
-                    st.markdown("## 6. Simulação dos próximos dias")
-                    st.caption("Use esta área para testar o comportamento do balanço hídrico sem precisar esperar os próximos dias reais.")
+        with tab_g2:
+            graf2 = df_calculos.copy()
+            for col in ["AKc", "Kc p", "Kc", "Ks"]:
+                graf2[col] = pd.to_numeric(graf2[col], errors="coerce")
+            st.line_chart(
+                graf2.set_index("Data")[["AKc", "Kc p", "Kc", "Ks"]],
+                height=320,
+            )
 
-                    simular_futuro = st.checkbox(
-                        "Ativar simulação futura",
-                        value=False,
-                        key=f"simular_futuro_{plantio_calc_id}"
-                    )
+        with tab_g3:
+            graf3 = df_calculos.copy()
+            for col in ["LLI", "LBI", "LLI aplicada", "LA in", "LA f", "LA mi"]:
+                graf3[col] = pd.to_numeric(graf3[col], errors="coerce")
+            st.line_chart(
+                graf3.set_index("Data")[["LLI", "LBI", "LLI aplicada", "LA in", "LA f", "LA mi"]],
+                height=320,
+            )
 
-                    if simular_futuro:
-                        c_sim1, c_sim2, c_sim3 = st.columns(3)
-                        dias_futuros = int(c_sim1.number_input(
-                            "Quantidade de dias futuros",
-                            min_value=1,
-                            max_value=60,
-                            value=7,
-                            step=1,
-                            key=f"dias_futuros_{plantio_calc_id}"
-                        ))
-                        eto_futuro = float(c_sim2.number_input(
-                            "ETo futuro fixo (mm/dia)",
-                            min_value=0.0,
-                            value=float(r.eto_mm),
-                            step=0.1,
-                            format="%.3f",
-                            key=f"eto_futuro_{plantio_calc_id}"
-                        ))
-                        chuva_futura = float(c_sim3.number_input(
-                            "Precipitação futura fixa (mm/dia)",
-                            min_value=0.0,
-                            value=float(r.p_mm),
-                            step=0.1,
-                            format="%.3f",
-                            key=f"chuva_futura_{plantio_calc_id}"
-                        ))
+        st.markdown("### Exportação")
+        st.download_button(
+            "Baixar memória de cálculo em CSV",
+            data=df_calculos.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"memoria_calculo_plantio_{plantio['id']}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
 
-                        c_sim4, c_sim5 = st.columns(2)
-                        pef_mode_sim = c_sim4.selectbox(
-                            "Como mostrar o Pef na tabela simulada",
-                            ["igual_p", "percentual"],
-                            format_func=lambda x: "Pef = P" if x == "igual_p" else "Pef = percentual da precipitação",
-                            key=f"pef_mode_sim_{plantio_calc_id}"
-                        )
-                        pef_percentual_sim = float(c_sim5.number_input(
-                            "Percentual do Pef",
-                            min_value=0.0,
-                            max_value=1.0,
-                            value=1.0,
-                            step=0.05,
-                            format="%.2f",
-                            key=f"pef_percentual_sim_{plantio_calc_id}",
-                            disabled=(pef_mode_sim != "percentual")
-                        ))
+        st.markdown("### Fórmulas resumidas")
+        st.code(
+            "\n".join([
+                "θfc = Ucc × Ds",
+                "θwp = Upmp × Ds",
+                "Z = profundidade radicular efetiva do dia",
+                "SR = Z × 1000",
+                "Kl = 0,1 × √SR",
+                "TAW = 1000 × (θfc - θwp) × Z",
+                "RAW = TAW × f",
+                "AKc = variação diária do Kc na fase",
+                "Kc p = Kc × Kl",
+                "Ks = 1, se Dr ≤ RAW",
+                "Ks = (TAW - Dr) / (TAW - RAW), se Dr > RAW",
+                "ETc = ETo × Kc × Ks × Kl",
+                "LA antes irrigação = LA in + Pef + I_real - ETc",
+                "LA f = limite entre 0 e DTA",
+                "LA mi = DTA - DRA",
+                "LLI = DTA - LA f, se LA f ≤ LA mi; senão 0",
+                "LBI = LLI / eficiência",
+                "DP = Dr, quando Dr ≥ RAW; senão 0",
+            ]),
+            language="text"
+        )
 
-                        previsao_inicio = data_calculo
-                        previsao_fim = data_calculo + timedelta(days=dias_futuros - 1)
+    except Exception as e:
+        st.error(f"Erro ao gerar a memória de cálculo: {e}")
 
-                        future_weather = fetch_weather_open_meteo(
-                            latitude=plantio["latitude"],
-                            longitude=plantio["longitude"],
-                            start_date=previsao_inicio,
-                            end_date=previsao_fim,
-                            timezone=plantio["timezone"],
-                        )
 
-                        # Junta clima já carregado com previsão futura sem duplicar datas,
-                        # preservando primeiro os dados já existentes do período atual.
-                        weather_data_expandido = merge_weather_data_by_date(weather_data, future_weather)
+pagina = render_sidebar()
 
-                        resultados_expandido = simulate_irrigation(
-                            crop=crop,
-                            soil=soil,
-                            sistema_irrigacao=plantio["sistema_irrigacao"],
-                            data_plantio=data_plantio,
-                            weather_data=weather_data_expandido,
-                            z_override_m=plantio["z_override_m"],
-                            irrigacao_real_por_dia=irrigacao_map,
-                            modo_automatico=True,
-                            modo_calculo=modo_calculo_calc_key,
-                        )
-
-                        resultados_futuros = [
-                            res for res in resultados_expandido
-                            if data_calculo <= res.data <= previsao_fim
-                        ]
-
-                        if resultados_futuros:
-                            eficiencia_sim = IRRIGATION_EFFICIENCY[normalize_name(plantio["sistema_irrigacao"])]
-                            df_sim = build_planilha_prof_df(
-                                results=resultados_futuros,
-                                soil=soil,
-                                crop=crop,
-                                eficiencia=eficiencia_sim,
-                                pef_mode=pef_mode_sim,
-                                pef_percentual=pef_percentual_sim,
-                            )
-
-                            st.write(
-                                f"Simulação usando a previsão da Open-Meteo de **{data_calculo.strftime('%d/%m/%Y')}** até "
-                                f"**{previsao_fim.strftime('%d/%m/%Y')}**."
-                            )
-                            st.dataframe(df_sim, width="stretch")
-
-                            df_sim_grafico = df_sim.copy()
-                            for col in ["DRA (mm)", "DP", "LLI", "LBI", "ETc (mm)", "Pef", "LA f"]:
-                                df_sim_grafico[col] = pd.to_numeric(df_sim_grafico[col], errors="coerce")
-                            st.line_chart(
-                                df_sim_grafico.set_index("Data")[["DP", "DRA (mm)", "LA f"]],
-                                height=320,
-                            )
-
-                            st.download_button(
-                                "Baixar simulação futura em CSV",
-                                data=df_sim.to_csv(index=False).encode("utf-8-sig"),
-                                file_name=f"simulacao_futura_plantio_{plantio_calc_id}.csv",
-                                mime="text/csv",
-                                key=f"download_sim_csv_{plantio_calc_id}"
-                            )
-                        else:
-                            st.info("Não foi possível gerar resultados futuros para a configuração atual.")
-
-                    st.markdown("## 7. Fórmulas resumidas")
-                    st.code(
-                        "\n".join([
-                            "θfc = Ucc × Ds",
-                            "θwp = Upmp × Ds",
-                            "SR = Z × 1000",
-                            "Kl = 0,1 × √SR",
-                            "TAW = 1000 × (θfc - θwp) × Z",
-                            "RAW = TAW × f",
-                            "Ks = 1, se Dr ≤ RAW",
-                            "Ks = (TAW - Dr) / (TAW - RAW), se Dr > RAW",
-                            "ETc = ETo × Kc × Ks × Kl",
-                            "Dr = Dr_anterior - P - I_real + ETc",
-                            "LLI = Dr, se Dr ≥ RAW; senão 0",
-                            "LBI = LLI / eficiência",
-                        ]),
-                        language="text"
-                    )
-
-            except Exception as e:
-                st.error(f"Erro ao explicar os cálculos: {e}")
+if pagina == "Novo plantio":
+    render_novo_plantio()
+elif pagina == "Operação diária":
+    render_operacao_diaria()
+elif pagina == "Histórico":
+    render_historico()
+elif pagina == "Cadastros":
+    render_cadastros()
+elif pagina == "Cálculos":
+    render_calculos()
