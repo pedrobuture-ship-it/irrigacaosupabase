@@ -444,7 +444,7 @@ def delete_plantio(plantio_id: str):
 # OPEN-METEO
 # ============================================================
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=1800)
 def fetch_weather_open_meteo(
     latitude: float,
     longitude: float,
@@ -461,32 +461,60 @@ def fetch_weather_open_meteo(
         "end_date": end_date.isoformat(),
     }
 
-    response = requests.get(OPEN_METEO_URL, params=params, timeout=30)
-    response.raise_for_status()
-    data = response.json()
+    last_error = None
 
-    if "daily" not in data:
-        raise RuntimeError("Resposta da Open-Meteo não contém 'daily'.")
-
-    daily = data["daily"]
-    times = daily.get("time", [])
-    precipitation = daily.get("precipitation_sum", [])
-    eto = daily.get("et0_fao_evapotranspiration", [])
-
-    if not (len(times) == len(precipitation) == len(eto)):
-        raise RuntimeError("Open-Meteo retornou listas com tamanhos diferentes.")
-
-    result = []
-    for t, p, e in zip(times, precipitation, eto):
-        result.append(
-            WeatherDay(
-                data=datetime.strptime(t, "%Y-%m-%d").date(),
-                precipitacao_mm=float(p or 0.0),
-                eto_mm=float(e or 0.0),
+    for tentativa in range(3):
+        try:
+            response = requests.get(
+                OPEN_METEO_URL,
+                params=params,
+                timeout=45,
             )
-        )
-    return result
 
+            if response.status_code == 429:
+                if tentativa < 2:
+                    import time
+                    time.sleep(2 * (tentativa + 1))
+                    continue
+                raise RuntimeError(
+                    "A API do Open-Meteo recebeu requisições demais em pouco tempo. "
+                    "Espere alguns segundos e tente novamente."
+                )
+
+            response.raise_for_status()
+            data = response.json()
+
+            if "daily" not in data:
+                raise RuntimeError("Resposta da Open-Meteo não contém 'daily'.")
+
+            daily = data["daily"]
+            times = daily.get("time", [])
+            precipitation = daily.get("precipitation_sum", [])
+            eto = daily.get("et0_fao_evapotranspiration", [])
+
+            if not (len(times) == len(precipitation) == len(eto)):
+                raise RuntimeError("Open-Meteo retornou listas com tamanhos diferentes.")
+
+            result = []
+            for t, p, e in zip(times, precipitation, eto):
+                result.append(
+                    WeatherDay(
+                        data=datetime.strptime(t, "%Y-%m-%d").date(),
+                        precipitacao_mm=float(p or 0.0),
+                        eto_mm=float(e or 0.0),
+                    )
+                )
+            return result
+
+        except requests.RequestException as e:
+            last_error = e
+            if tentativa < 2:
+                import time
+                time.sleep(2 * (tentativa + 1))
+            else:
+                raise RuntimeError(f"Erro ao consultar Open-Meteo: {e}") from e
+
+    raise RuntimeError(f"Erro ao consultar Open-Meteo: {last_error}")
 
 def merge_weather_data_by_date(*weather_lists: List[WeatherDay]) -> List[WeatherDay]:
     """Une listas de clima sem duplicar datas, preservando a primeira ocorrência de cada dia."""
