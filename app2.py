@@ -549,6 +549,15 @@ def merge_weather_data_by_date(*weather_lists: List[WeatherDay]) -> List[Weather
     return [merged[d] for d in sorted(merged.keys())]
 
 
+def merge_weather_data_prefer_last(*weather_lists: List[WeatherDay]) -> List[WeatherDay]:
+    """Une listas de clima e, em caso de datas repetidas, mantém a última ocorrência."""
+    merged: Dict[date, WeatherDay] = {}
+    for weather_list in weather_lists:
+        for wd in weather_list:
+            merged[wd.data] = wd
+    return [merged[d] for d in sorted(merged.keys())]
+
+
 # ============================================================
 # CÁLCULOS AGRONÔMICOS
 # ============================================================
@@ -954,6 +963,51 @@ def render_empty_state(message: str):
     st.info(message)
 
 
+def build_manual_seed_df(
+    start_date: date,
+    num_days: int,
+    seed_weather: Optional[List[WeatherDay]] = None,
+) -> pd.DataFrame:
+    seed_map: Dict[date, WeatherDay] = {wd.data: wd for wd in (seed_weather or [])}
+    rows = []
+    for i in range(num_days):
+        dia = start_date + timedelta(days=i)
+        wd = seed_map.get(dia)
+        rows.append({
+            "Data": dia,
+            "P (mm)": round(float(wd.precipitacao_mm), 3) if wd else 0.0,
+            "ETo (mm)": round(float(wd.eto_mm), 3) if wd else 0.0,
+            "Irrigou": False,
+            "I_real (mm)": 0.0,
+        })
+    return pd.DataFrame(rows)
+
+
+def manual_df_to_inputs(df_manual: pd.DataFrame) -> Tuple[List[WeatherDay], Dict[date, float]]:
+    weather_data: List[WeatherDay] = []
+    irrigacao_map: Dict[date, float] = {}
+
+    for _, row in df_manual.iterrows():
+        data_ref = pd.to_datetime(row["Data"]).date()
+        p_mm = float(row.get("P (mm)", 0.0) or 0.0)
+        eto_mm = float(row.get("ETo (mm)", 0.0) or 0.0)
+        irrigou = bool(row.get("Irrigou", False))
+        i_real = float(row.get("I_real (mm)", 0.0) or 0.0)
+
+        weather_data.append(
+            WeatherDay(
+                data=data_ref,
+                precipitacao_mm=p_mm,
+                eto_mm=eto_mm,
+            )
+        )
+
+        if irrigou or i_real > 0:
+            irrigacao_map[data_ref] = i_real
+
+    return weather_data, irrigacao_map
+
+
 def render_sidebar() -> str:
     with st.sidebar:
         st.header("Navegação")
@@ -962,6 +1016,7 @@ def render_sidebar() -> str:
             [
                 "Novo plantio",
                 "Operação diária",
+                "Manual",
                 "Histórico",
                 "Cadastros",
                 "Cálculos",
@@ -972,8 +1027,8 @@ def render_sidebar() -> str:
         st.divider()
         st.subheader("Orientação")
         st.caption(
-            "Use a operação diária para consultar o clima do dia, registrar a irrigação realizada "
-            "e projetar os próximos dias."
+            "Use a operação diária para consultar o clima do dia, registrar a irrigação realizada, "
+            "projetar os próximos dias ou preencher cenários manualmente na aba Manual."
         )
 
     return pagina
@@ -1381,6 +1436,235 @@ def render_operacao_diaria():
 
     except Exception as e:
         st.error(f"Erro ao processar a operação diária: {e}")
+
+
+def render_manual():
+    st.subheader("Manual")
+    st.write("Monte um cenário manual de até 90 dias, informando precipitação, ETo e irrigação dia a dia.")
+
+    plantios_df = list_plantios()
+    if plantios_df.empty:
+        render_empty_state("Cadastre um plantio antes de usar a simulação manual.")
+        return
+
+    opcoes = {
+        format_plantio_label(row): str(row["id"])
+        for _, row in plantios_df.iterrows()
+    }
+
+    with st.form("form_manual_setup"):
+        st.markdown("### Configuração do cenário manual")
+        plantio_label = st.selectbox("Escolha o plantio", list(opcoes.keys()), key="manual_plantio")
+        plantio_id = opcoes[plantio_label]
+        plantio = get_plantio(plantio_id)
+        data_plantio = to_date(plantio["data_plantio"])
+
+        c1, c2, c3, c4 = st.columns(4)
+        data_inicio = c1.date_input(
+            "Data inicial do cenário",
+            value=max(date.today(), data_plantio),
+            min_value=data_plantio,
+            key=f"manual_data_inicio_{plantio_id}",
+        )
+        num_dias = int(c2.number_input(
+            "Dias para prever",
+            min_value=1,
+            max_value=90,
+            value=15,
+            step=1,
+            key=f"manual_num_dias_{plantio_id}",
+        ))
+        modo_calculo = c3.selectbox(
+            "Método de cálculo",
+            ["fao56", "planilha"],
+            format_func=lambda x: "FAO-56" if x == "fao56" else "Planilha",
+            key=f"manual_modo_{plantio_id}",
+        )
+        preencher_previsao = c4.selectbox(
+            "Preencher tabela inicial",
+            ["zerado", "open_meteo"],
+            format_func=lambda x: "Tudo zerado" if x == "zerado" else "Com Open-Meteo",
+            key=f"manual_seed_{plantio_id}",
+        )
+
+        carregar_tabela = st.form_submit_button("Carregar tabela manual", use_container_width=True)
+
+    if not carregar_tabela and "manual_editor_df" not in st.session_state:
+        return
+
+    if carregar_tabela:
+        plantio = get_plantio(plantio_id)
+        seed_weather: List[WeatherDay] = []
+        if preencher_previsao == "open_meteo":
+            try:
+                seed_weather = fetch_weather_open_meteo(
+                    latitude=float(plantio["latitude"]),
+                    longitude=float(plantio["longitude"]),
+                    start_date=data_inicio,
+                    end_date=data_inicio + timedelta(days=num_dias - 1),
+                    timezone=plantio["timezone"],
+                )
+            except Exception as e:
+                st.warning(f"Não foi possível preencher com Open-Meteo. A tabela será aberta zerada. Motivo: {e}")
+                seed_weather = []
+
+        st.session_state["manual_cfg"] = {
+            "plantio_id": plantio_id,
+            "data_inicio": data_inicio,
+            "num_dias": num_dias,
+            "modo_calculo": modo_calculo,
+        }
+        st.session_state["manual_editor_df"] = build_manual_seed_df(
+            start_date=data_inicio,
+            num_days=num_dias,
+            seed_weather=seed_weather,
+        )
+
+    cfg = st.session_state.get("manual_cfg")
+    df_editor = st.session_state.get("manual_editor_df")
+
+    if not cfg or df_editor is None:
+        return
+
+    plantio = get_plantio(cfg["plantio_id"])
+    crop = CROPS[plantio["cultura_key"]]
+    soil = Soil(
+        ucc=float(plantio["ucc"]),
+        upmp=float(plantio["upmp"]),
+        ds=float(plantio["ds"]),
+    )
+    data_plantio = to_date(plantio["data_plantio"])
+    data_inicio = cfg["data_inicio"]
+    num_dias = int(cfg["num_dias"])
+    modo_calculo = cfg["modo_calculo"]
+    data_fim = data_inicio + timedelta(days=num_dias - 1)
+
+    render_resumo_plantio_card(plantio)
+
+    st.markdown("### Tabela manual")
+    st.caption("Edite chuva, ETo e irrigação real para cada dia. O cálculo é refeito em cadeia do primeiro ao último dia.")
+
+    edited_df = st.data_editor(
+        df_editor,
+        width="stretch",
+        hide_index=True,
+        num_rows="fixed",
+        column_config={
+            "Data": st.column_config.DateColumn("Data", format="DD/MM/YYYY", disabled=True),
+            "P (mm)": st.column_config.NumberColumn("P (mm)", min_value=0.0, step=0.1, format="%.3f"),
+            "ETo (mm)": st.column_config.NumberColumn("ETo (mm)", min_value=0.0, step=0.1, format="%.3f"),
+            "Irrigou": st.column_config.CheckboxColumn("Irrigou"),
+            "I_real (mm)": st.column_config.NumberColumn("I_real (mm)", min_value=0.0, step=0.1, format="%.3f"),
+        },
+        key="manual_data_editor_widget",
+    )
+    st.session_state["manual_editor_df"] = edited_df
+
+    cbtn1, cbtn2 = st.columns(2)
+    recalcular = cbtn1.button("Calcular cenário manual", use_container_width=True)
+    resetar = cbtn2.button("Resetar tabela", use_container_width=True)
+
+    if resetar:
+        st.session_state["manual_editor_df"] = build_manual_seed_df(start_date=data_inicio, num_days=num_dias)
+        st.rerun()
+
+    if not recalcular:
+        return
+
+    try:
+        weather_manual, irrigacao_manual = manual_df_to_inputs(edited_df)
+
+        weather_previo: List[WeatherDay] = []
+        if data_inicio > data_plantio:
+            weather_previo = fetch_weather_open_meteo(
+                latitude=float(plantio["latitude"]),
+                longitude=float(plantio["longitude"]),
+                start_date=data_plantio,
+                end_date=data_inicio - timedelta(days=1),
+                timezone=plantio["timezone"],
+            )
+
+        weather_total = merge_weather_data_prefer_last(weather_previo, weather_manual)
+        irrigacao_total = get_irrigation_map(plantio["id"])
+        irrigacao_total.update(irrigacao_manual)
+
+        resultados = simulate_irrigation(
+            crop=crop,
+            soil=soil,
+            sistema_irrigacao=plantio["sistema_irrigacao"],
+            data_plantio=data_plantio,
+            weather_data=weather_total,
+            z_override_m=plantio["z_override_m"],
+            irrigacao_real_por_dia=irrigacao_total,
+            modo_automatico=True,
+            modo_calculo=modo_calculo,
+        )
+
+        resultados_periodo = [
+            r for r in resultados
+            if data_inicio <= r.data <= data_fim
+        ]
+
+        if not resultados_periodo:
+            st.warning("Não foi possível gerar resultados para o período manual informado.")
+            return
+
+        ultimo = resultados_periodo[-1]
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Dias simulados", str(len(resultados_periodo)))
+        m2.metric("Ks final", f"{ultimo.ks:.4f}")
+        m3.metric("LLI final", f"{ultimo.lli_mm:.3f} mm")
+        m4.metric("LBI final", f"{ultimo.lbi_mm:.3f} mm")
+
+        df_resultados = results_to_dataframe(resultados_periodo)
+
+        eficiencia = IRRIGATION_EFFICIENCY[normalize_name(plantio["sistema_irrigacao"])]
+        df_planilha = build_planilha_prof_df(
+            results=resultados_periodo,
+            soil=soil,
+            crop=crop,
+            eficiencia=eficiencia,
+            pef_mode="igual_p",
+            pef_percentual=1.0,
+        )
+
+        tab1, tab2, tab3 = st.tabs(["Resultados", "Planilha", "Gráficos"])
+
+        with tab1:
+            st.dataframe(df_resultados, width="stretch", hide_index=True)
+            st.download_button(
+                "Baixar resultados manuais em CSV",
+                data=df_resultados.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"manual_resultados_{plantio['id']}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+        with tab2:
+            st.dataframe(df_planilha, width="stretch", hide_index=True)
+            st.download_button(
+                "Baixar planilha manual em CSV",
+                data=df_planilha.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"manual_planilha_{plantio['id']}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key=f"manual_planilha_download_{plantio['id']}",
+            )
+
+        with tab3:
+            graf = df_planilha.copy()
+            for col in ["ETc (mm)", "LLI", "LBI", "LA in", "LA f", "DP"]:
+                if col in graf.columns:
+                    graf[col] = pd.to_numeric(graf[col], errors="coerce")
+
+            colunas_plot = [c for c in ["ETc (mm)", "LLI", "LBI", "LA in", "LA f", "DP"] if c in graf.columns]
+            if colunas_plot:
+                st.line_chart(graf.set_index("Data")[colunas_plot], height=340)
+            else:
+                st.info("Não há colunas suficientes para montar o gráfico.")
+
+    except Exception as e:
+        st.error(f"Erro ao calcular o cenário manual: {e}")
 
 
 def render_historico():
@@ -1873,6 +2157,8 @@ if pagina == "Novo plantio":
     render_novo_plantio()
 elif pagina == "Operação diária":
     render_operacao_diaria()
+elif pagina == "Manual":
+    render_manual()
 elif pagina == "Histórico":
     render_historico()
 elif pagina == "Cadastros":
